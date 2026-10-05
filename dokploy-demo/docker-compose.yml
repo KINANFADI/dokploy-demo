@@ -1,0 +1,70 @@
+# Dokploy "Docker Compose" deployment: web + worker + Postgres + Redis.
+# Don't add `ports:` or `container_name:` — add the domain in Dokploy's UI
+# (service: web, port: 3000) and it wires Traefik for you.
+services:
+  web:
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-compose}
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      DATABASE_URL: postgres://demo:${POSTGRES_PASSWORD:-demo}@db:5432/demo
+      REDIS_URL: redis://redis:6379
+      GREETING: ${GREETING:-Hello from Docker Compose}
+      SECRET_KEY: ${SECRET_KEY:-}
+      ALLOW_CRASH: ${ALLOW_CRASH:-false}
+      DEMO_FEATURE_FLAG: ${DEMO_FEATURE_FLAG:-}
+      DATA_DIR: /data
+    volumes:
+      - web-data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+    command: ["node", "worker.js"]
+    restart: unless-stopped
+    environment:
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-demo}
+      POSTGRES_DB: demo
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d demo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  web-data:
+  db-data:
+  redis-data:

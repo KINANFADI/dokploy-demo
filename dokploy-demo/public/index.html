@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dokploy pre-flight</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #EEF1F4; --panel: #FFFFFF; --ink: #16222E; --muted: #5B6875; --line: #D3DAE1;
+    --ok: #1F7A4D; --warn: #B7791F; --err: #B83227; --off: #8A96A3; --accent: #24527A;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121A22; --panel: #18232E; --ink: #E3E9EF; --muted: #9AA7B4; --line: #2A3845;
+      --ok: #4CC38A; --warn: #E3A64A; --err: #F06B5D; --off: #6B7885; --accent: #7FB2DE;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 40px 20px 64px; }
+  header { display: grid; gap: 4px; margin-bottom: 28px; }
+  h1 { font-size: clamp(28px, 5vw, 40px); line-height: 1.1; margin: 0; letter-spacing: -0.01em; }
+  #verdict { font-size: 20px; margin: 6px 0 0; }
+  #meta { color: var(--muted); font-size: 14px; margin: 0; }
+
+  ol.checks { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--ink); }
+  ol.checks > li { border-bottom: 1px solid var(--line); }
+  details > summary {
+    display: grid; grid-template-columns: 22px 1fr auto; gap: 14px; align-items: center;
+    padding: 16px 4px; cursor: pointer; list-style: none;
+  }
+  details > summary::-webkit-details-marker { display: none; }
+  summary:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .light { width: 14px; height: 14px; border-radius: 50%; background: var(--off); justify-self: center; }
+  .light.ok { background: var(--ok); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 20%, transparent); }
+  .light.warn { background: var(--warn); }
+  .light.error { background: var(--err); box-shadow: 0 0 0 4px color-mix(in srgb, var(--err) 20%, transparent); }
+  .name { font-weight: 700; font-size: 18px; }
+  .summary { color: var(--muted); font-size: 15px; display: block; font-weight: 400; }
+  .state { font-size: 14px; font-weight: 700; }
+  .state.ok { color: var(--ok); } .state.warn { color: var(--warn); }
+  .state.error { color: var(--err); } .state.off { color: var(--off); }
+  dl { margin: 0 0 18px 36px; display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 6px 18px; font-size: 15px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  dd ul { margin: 0; padding-left: 18px; }
+
+  section.actions { margin-top: 36px; }
+  h2 { font-size: 20px; margin: 0 0 4px; }
+  .actions p { color: var(--muted); margin: 0 0 14px; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 10px; }
+  button {
+    font: inherit; font-weight: 700; padding: 10px 16px; border-radius: 6px; cursor: pointer;
+    border: 2px solid var(--ink); background: var(--panel); color: var(--ink);
+  }
+  button:hover { background: var(--ink); color: var(--bg); }
+  button.danger { border-color: var(--err); color: var(--err); }
+  button.danger:hover { background: var(--err); color: #fff; }
+  #toast { min-height: 24px; margin-top: 14px; font-size: 15px; }
+  @media (max-width: 560px) {
+    dl { margin-left: 0; grid-template-columns: 1fr; gap: 0 0; }
+    dd { margin-bottom: 8px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Dokploy pre-flight</h1>
+    <p id="verdict">Running checks…</p>
+    <p id="meta"></p>
+  </header>
+
+  <ol class="checks" id="checks"></ol>
+
+  <section class="actions">
+    <h2>Try it</h2>
+    <p>Each action leaves a trace you can confirm in Dokploy's logs, monitoring, or this page.</p>
+    <div class="buttons">
+      <button data-action="enqueue">Queue a worker job</button>
+      <button data-action="log">Write log lines</button>
+      <button data-action="stress">Load the CPU for 15s</button>
+      <button data-action="crash" class="danger">Crash the container</button>
+    </div>
+    <div id="toast" role="status" aria-live="polite"></div>
+  </section>
+</main>
+
+<script>
+const ORDER = [
+  ['http', 'Domain & HTTPS', c => `${c.protocol}://${c.host}`],
+  ['env', 'Environment variables', c => `GREETING: ${c.GREETING}`],
+  ['postgres', 'PostgreSQL', c => c.status === 'ok' ? `${c.version}, ${c.visitsStored} visits stored, ${c.latencyMs} ms` : c.detail],
+  ['redis', 'Redis', c => c.status === 'ok' ? `Redis ${c.version}, ${c.pageViews} page views, ${c.latencyMs} ms` : c.detail],
+  ['worker', 'Background worker', c => c.lastHeartbeat ? `Heartbeat ${c.lastHeartbeat}, ${c.jobsDone} jobs done` : c.detail],
+  ['volume', 'Persistent volume', c => c.detail || c.hint],
+];
+const STATE = { ok: 'Go', warn: 'Check', error: 'Fail', off: 'Not set up' };
+const open = new Set();
+
+const esc = s => String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const label = k => k.replace(/([A-Z])/g, ' $1').replace(/^./, ch => ch.toUpperCase());
+const value = v => Array.isArray(v)
+  ? (v.length ? `<ul>${v.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : 'none')
+  : esc(v ?? '—');
+
+function render(data) {
+  const list = document.getElementById('checks');
+  list.innerHTML = ORDER.map(([key, name, summarize]) => {
+    const c = data.checks[key];
+    const rows = Object.entries(c).filter(([k]) => k !== 'status')
+      .map(([k, v]) => `<dt>${esc(label(k))}</dt><dd>${value(v)}</dd>`).join('');
+    return `<li><details data-key="${key}" ${open.has(key) ? 'open' : ''}>
+      <summary>
+        <span class="light ${c.status}" aria-hidden="true"></span>
+        <span><span class="name">${name}</span><span class="summary">${esc(summarize(c) ?? '')}</span></span>
+        <span class="state ${c.status}">${STATE[c.status]}</span>
+      </summary>
+      <dl>${rows}</dl>
+    </details></li>`;
+  }).join('');
+  list.querySelectorAll('details').forEach(d => d.addEventListener('toggle', () =>
+    d.open ? open.add(d.dataset.key) : open.delete(d.dataset.key)));
+
+  const statuses = ORDER.map(([k]) => data.checks[k].status);
+  const go = statuses.filter(s => s === 'ok').length;
+  const failing = statuses.filter(s => s === 'error').length;
+  document.getElementById('verdict').textContent =
+    `${go} of ${statuses.length} systems go` + (failing ? `, ${failing} failing` : '');
+  const a = data.app;
+  document.getElementById('meta').textContent =
+    `Version ${a.version}, built ${a.buildTime || 'locally'}. Container ${a.hostname}, up ${a.uptimeSec}s, ${a.memoryMb} MB, Node ${a.node}.`;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('/api/status');
+    render(await r.json());
+  } catch {
+    document.getElementById('verdict').textContent = 'Can\'t reach the app. It may be restarting, so this page will retry.';
+  }
+}
+
+const ACTIONS = {
+  enqueue: ['/api/enqueue', d => `Job #${d.queued} queued. Watch the worker pick it up.`],
+  log: ['/api/log', d => `Wrote 3 log lines tagged ${d.tag}. Find them in the Logs tab.`],
+  stress: ['/api/stress?seconds=15', d => `Loading ${d.threads} core for ${d.seconds}s. Open Monitoring.`],
+  crash: ['/api/crash', () => 'Crashing now. The container should restart within a few seconds.'],
+};
+document.querySelectorAll('[data-action]').forEach(btn => btn.addEventListener('click', async () => {
+  const [url, done] = ACTIONS[btn.dataset.action];
+  if (btn.dataset.action === 'crash' && !confirm('Exit the process with code 1?')) return;
+  const toast = document.getElementById('toast');
+  try {
+    const r = await fetch(url, { method: 'POST' });
+    const d = await r.json();
+    toast.textContent = r.ok ? done(d) : d.error;
+  } catch { toast.textContent = 'Request failed. The app may be restarting.'; }
+  setTimeout(refresh, 800);
+}));
+
+fetch('/api/visit', { method: 'POST' }).finally(refresh);
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>
